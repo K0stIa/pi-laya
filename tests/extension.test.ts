@@ -8,7 +8,7 @@ test("extension registers advisory tools by default and makes no request at load
   const extension = extensionModule.default;
   const tools = [];
   extension({ registerTool: (tool) => tools.push(tool) }, { env: {} });
-  assert.deepEqual(tools.map((tool) => tool.name), ["laya_evaluate", "laya_decide"]);
+  assert.deepEqual(tools.map((tool) => tool.name), ["laya_evaluate", "laya_compact", "laya_review", "laya_inventory_route", "laya_supervise", "laya_decide"]);
 });
 
 test("extension enables compatibility alias only when opted in", () => {
@@ -16,7 +16,7 @@ test("extension enables compatibility alias only when opted in", () => {
   const extension = extensionModule.default;
   const tools = [];
   extension({ registerTool: (tool) => tools.push(tool) }, { env: { PI_LAYA_ENABLE_SYSTEM_ONE_ALIAS: "true" } });
-  assert.deepEqual(tools.map((tool) => tool.name), ["laya_evaluate", "laya_decide", "laya_system_one"]);
+  assert.deepEqual(tools.map((tool) => tool.name), ["laya_evaluate", "laya_compact", "laya_review", "laya_inventory_route", "laya_supervise", "laya_decide", "laya_system_one"]);
 });
 
 test("extension publishes schemas for all typed question variants", () => {
@@ -34,7 +34,7 @@ test("extension reads alias opt-in from the real environment", () => {
   const tools = [];
   try {
     extensionModule.default({ registerTool: (tool) => tools.push(tool) });
-    assert.deepEqual(tools.map((tool) => tool.name), ["laya_evaluate", "laya_decide", "laya_system_one"]);
+    assert.deepEqual(tools.map((tool) => tool.name), ["laya_evaluate", "laya_compact", "laya_review", "laya_inventory_route", "laya_supervise", "laya_decide", "laya_system_one"]);
   } finally {
     if (previous === undefined) delete process.env.PI_LAYA_ENABLE_SYSTEM_ONE_ALIAS;
     else process.env.PI_LAYA_ENABLE_SYSTEM_ONE_ALIAS = previous;

@@ -60,6 +60,15 @@ guarantee. Set
 `PI_LAYA_ENABLE_SYSTEM_ONE_ALIAS=true` to additionally register the
 compatibility alias `laya_system_one`.
 
+Additional advisory adapters are explicit tools: `laya_compact` produces a
+reversible context plan and preserves protected/pair items; `laya_inventory_route`
+reads the active Pi session's available skills, tools, and models; `laya_supervise`
+returns bounded `continue`/`retry`/`steer`/`stop`/`human` advice; and
+`laya_review` performs staged diff risk checks. They return plans and traces
+only—none changes Pi context, enables a skill, switches a model, blocks a tool,
+retries an agent, or approves a change. Traces retain digests and decision
+summaries rather than raw context, diffs, prompts, or credentials.
+
 ## Tool payloads
 
 `laya_evaluate` accepts a structured state and one or more typed questions:
