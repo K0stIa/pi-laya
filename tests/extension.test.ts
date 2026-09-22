@@ -76,6 +76,21 @@ test("Pi decision tool evaluates typed state then returns gated non-executable a
 
 test("extension throws a safe configuration error without an endpoint", async () => {
   const tools = [];
-  extensionModule.default({ registerTool: (tool) => tools.push(tool) }, { env: {} });
-  await assert.rejects(() => tools[0].execute("call", { state: {}, questions: { decide: { type: "noul", instructions: "Decide" } } }), { message: "Laya error: Laya configuration is incomplete" });
+  let fetchCalls = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    fetchCalls += 1;
+    throw new Error("network must not be used for missing configuration");
+  };
+  try {
+    extensionModule.default({ registerTool: (tool) => tools.push(tool) }, {
+      env: {},
+      readLocalConfig: () => undefined,
+      readSecret: () => { throw new Error("missing test secret"); },
+    });
+    await assert.rejects(() => tools[0].execute("call", { state: {}, questions: { decide: { type: "noul", instructions: "Decide" } } }), { message: "Laya error: Laya configuration is incomplete" });
+    assert.equal(fetchCalls, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

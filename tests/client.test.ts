@@ -36,12 +36,54 @@ test("LayaClient sanitizes HTTP failures", async () => {
   await assert.rejects(() => client.evaluate(request), { message: "Laya request failed (HTTP 401)" });
 });
 
+test("LayaClient cancels an HTTP error body", async () => {
+  let cancelled = false;
+  const client = new clientModule.LayaClient({
+    baseUrl: "https://laya.example.com",
+    apiToken: "test-token",
+    fetch: async () => ({
+      ok: false,
+      status: 503,
+      body: { cancel: async () => { cancelled = true; } },
+    }),
+  });
+  await assert.rejects(() => client.evaluate(request), { message: "Laya request failed (HTTP 503)" });
+  assert.equal(cancelled, true);
+});
+
+test("LayaClient rejects an oversized response model before parsing JSON", async () => {
+  let jsonCalls = 0;
+  const client = new clientModule.LayaClient({
+    baseUrl: "https://laya.example.com",
+    apiToken: "test-token",
+    fetch: async () => {
+      const response = new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(JSON.stringify({
+            answers: { urgent: { type: "noul", noul: 0.8 } },
+            model: "x".repeat(64 * 1024),
+          })));
+          controller.close();
+        },
+      }));
+      response.json = async () => {
+        jsonCalls += 1;
+        return { answers: { urgent: { type: "noul", noul: 0.8 } } };
+      };
+      return response;
+    },
+  });
+  await assert.rejects(() => client.evaluate(request), { message: "Laya response was invalid" });
+  assert.equal(jsonCalls, 0);
+});
+
 test("LayaClient permits cleartext only for loopback endpoints and prevents redirects", async () => {
   assert.equal(typeof clientModule.LayaClient, "function");
   assert.throws(() => new clientModule.LayaClient({ baseUrl: "http://laya.example.com", apiToken: "test-token" }), /configuration is invalid/);
   for (const endpoint of ["https://token@laya.example.com", "https://laya.example.com?mode=test", "https://laya.example.com#fragment"]) {
     assert.throws(() => new clientModule.LayaClient({ baseUrl: endpoint, apiToken: "test-token" }), /configuration is invalid/);
   }
+  assert.doesNotThrow(() => new clientModule.LayaClient({ baseUrl: "http://[::1]:9130", apiToken: "test-token" }));
   let redirect;
   const client = new clientModule.LayaClient({
     baseUrl: "http://127.0.0.1:9130",
@@ -86,7 +128,18 @@ test("LayaClient applies its deadline while reading the response body", async ()
     baseUrl: "https://laya.example.com",
     apiToken: "test-token",
     timeoutMs: 1,
-    fetch: async () => ({ ok: true, json: async () => new Promise((resolve) => setTimeout(() => resolve({ answers: { urgent: { type: "noul", noul: 0.8 } } }), 20)) })
+    fetch: async () => {
+      let timeout;
+      return new Response(new ReadableStream({
+        start(controller) {
+          timeout = setTimeout(() => {
+            controller.enqueue(new TextEncoder().encode(JSON.stringify({ answers: { urgent: { type: "noul", noul: 0.8 } } })));
+            controller.close();
+          }, 20);
+        },
+        cancel() { clearTimeout(timeout); },
+      }));
+    }
   });
   await assert.rejects(() => client.evaluate(request), { message: "Laya request failed" });
 });

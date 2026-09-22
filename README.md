@@ -5,6 +5,16 @@ It sends structured `choice`, `score`, and `noul` requests to a Laya-compatible
 service; it does not generate prose, operate browsers or computers, or execute
 the selected action.
 
+## Install
+
+Build the local checkout, then install that directory into Pi:
+
+```sh
+npm install
+npm run build
+pi install ./local/path/to/pi-laya
+```
+
 ## Configuration
 
 Set both values before invoking the tool:
@@ -28,6 +38,19 @@ If the endpoint is an intentionally unencrypted private-network service, set
 loopback endpoints. If `PI_LAYA_API_TOKEN` is absent, the extension reads the token from
 `~/.pi/agent/secrets/laya_api_token`. There is no default endpoint or token.
 
+For example, keep the endpoint and token in local Pi files rather than in the
+extension checkout:
+
+```json
+// ~/.pi/agent/laya.json
+{ "baseUrl": "https://laya.example.com" }
+```
+
+```sh
+# ~/.pi/agent/secrets/laya_api_token
+your-token
+```
+
 The extension registers `laya_evaluate` and `laya_decide`. The latter covers
 browser, computer, context-retention, skill/tool-selection, model-routing,
 supervision, and review placements, but returns advisory, non-executable
@@ -36,6 +59,43 @@ the evidence as `profile_checked`; this is a caller assertion, not a model
 guarantee. Set
 `PI_LAYA_ENABLE_SYSTEM_ONE_ALIAS=true` to additionally register the
 compatibility alias `laya_system_one`.
+
+## Tool payloads
+
+`laya_evaluate` accepts a structured state and one or more typed questions:
+
+```json
+{
+  "state": { "page": "checkout", "cartTotal": 49 },
+  "questions": {
+    "continue": {
+      "type": "choice",
+      "instructions": "Choose the safest next step.",
+      "criteria": { "continue": "Continue checkout", "wait": "Wait for review" }
+    }
+  }
+}
+```
+
+`laya_decide` accepts the same state and questions plus a placement, with
+optional coverage and proposal policy. Its result remains advisory and
+non-executable:
+
+```json
+{
+  "placement": "browser",
+  "coverage": "profile_checked",
+  "policy": { "threshold": 0.9, "margin": 0.1, "budget": 1 },
+  "state": { "button": "next" },
+  "questions": {
+    "action": {
+      "type": "choice",
+      "instructions": "Choose the next browser action.",
+      "criteria": { "click": "Click next", "wait": "Wait" }
+    }
+  }
+}
+```
 
 ## Safety boundaries
 
