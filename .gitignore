@@ -2,3 +2,4 @@ node_modules/
 dist/
 .superpowers/
 .pi-lens-probe-home/
+.worktrees/
