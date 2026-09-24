@@ -4,17 +4,16 @@ on:
   push:
     tags: ["v*"]
 
-permissions:
-  contents: write
-
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  github-release:
+  verify-release:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v6
         with:
@@ -42,6 +41,26 @@ jobs:
         run: |
           mkdir -p artifacts
           npm pack --ignore-scripts --pack-destination artifacts
+      - name: Upload verified release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pi-laya-package
+          path: artifacts/*.tgz
+          if-no-files-found: error
+
+  github-release:
+    needs: verify-release
+    if: needs.verify-release.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Download verified release artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: pi-laya-package
+          path: artifacts
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
