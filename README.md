@@ -131,6 +131,29 @@ traces—never raw context text. Use `/laya_compact history` to display all
 recorded plans and outcomes. After reviewing a plan, record what happened with
 `/laya_compact outcome <plan-id> accepted|rejected|succeeded|failed`.
 
+### `/laya` session controls
+
+`/laya status` shows configuration source, endpoint, request/token counts, mode
+switches, and tool counts. `/laya help` lists subcommands.
+
+| Command | Effect |
+| --- | --- |
+| `/laya skills [query]` | List workspace skills or rank matches with Laya. Offline fallback uses keyword matches, marked as such. |
+| `/laya test [prompt]` | Run fixed connectivity test. With prompt, active Pi model designs typed questions, then Laya evaluates them. Aliases: `eval`, `evaluate`. |
+| `/laya enable` / `/laya disable` | Activate or deactivate Laya tools for current session. |
+| `/laya auto [on\|off]` | Toggle per-prompt Laya tool activation and skill suggestions. |
+| `/laya auto-model [on\|off]` | Toggle heuristic selection among Pi's available, compatible models. |
+| `/laya tool-guard [on\|off]` | Toggle Laya call checks and failure guidance. On Laya errors, checks fail open. |
+| `/laya compact [on\|off]` | Toggle Laya-guided `/compact`. Falls back to Pi compaction if branch is too large, no active summarizer exists, or evaluation fails. |
+| `/laya agents <task>` | Explicitly dispatch via pi-subagents RPC when installed. |
+| `/laya auto-agents [on\|off]` | Toggle prompt-based agent orchestration for complex tasks. |
+
+Switches without `on` or `off` flip their current state. All automatic modes
+start disabled unless matching `PI_LAYA_AUTO`, `PI_LAYA_AUTO_MODEL`,
+`PI_LAYA_TOOL_GUARD`, `PI_LAYA_COMPACT`, or `PI_LAYA_AGENTS` is set.
+Agent dispatch needs pi-subagents installed. Laya needs `PI_LAYA_BASE_URL` and
+a token. `/laya auto-model` uses Pi model metadata, not a Laya request.
+
 ### Slash commands for advisory adapters
 
 These commands make the adapters available directly from Pi’s slash menu; a
@@ -148,8 +171,9 @@ restart or `/reload` is required after installing or updating the extension.
 | `/laya_supervise <request.json>` | Provides bounded advice for an agent’s next supervision action. | Supply `{ summary, state?, limits, policy }`; persist the returned state and enforce the budgets in your workflow. |
 
 The JSON-file commands accept the same payload as their corresponding tools.
-Every result is advisory: none changes context, switches a model, executes an
-action, retries an agent, or approves a change.
+These JSON-file adapter results remain advisory. Unlike `/laya` session controls,
+they do not change context, switch models, dispatch agents, retry work, or
+approve a change.
 
 ## Tool payloads
 

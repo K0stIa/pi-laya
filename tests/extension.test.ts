@@ -17,7 +17,7 @@ test("extension registers advisory tools by default and makes no request at load
 test("extension registers slash commands for every advisory adapter", () => {
   const commands = [];
   extensionModule.default({ registerTool: () => {}, registerCommand: (name, command) => commands.push({ name, command }) }, { env: {} });
-  assert.deepEqual(commands.map((command) => command.name), ["laya_compact", "laya_decide", "laya_review", "laya_inventory_route", "laya_supervise"]);
+  assert.deepEqual(commands.map((command) => command.name), ["laya_compact", "laya_decide", "laya_review", "laya_inventory_route", "laya_supervise", "laya"]);
 });
 
 test("every /laya command runs through its registered Pi handler", async () => {

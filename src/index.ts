@@ -2,6 +2,7 @@ import { Type } from "typebox";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { LayaClient } from "./client.js";
+import { registerLayaCommands } from "./commands.js";
 import { resolveConfig, type ResolveConfigOptions } from "./config.js";
 import { DECISION_PLACEMENTS, makeDecisionProposal, validateDecisionRequest } from "./proposals.js";
 import { buildCompactionRequest, makeCompactionPlan, recordCompactionOutcome, type CompactionPlan } from "./compaction.js";
@@ -23,7 +24,7 @@ export interface PiLike {
   registerTool(tool: PiTool): void;
   registerCommand?: (name: string, options: { description?: string; handler: (args: string, context: SlashCommandContext) => Promise<void> }) => void;
   sendMessage?: (message: { customType: string; content: string; display: boolean }) => void;
-  on?: (event: string, handler: (event: unknown, context: unknown) => void | Promise<void>) => void;
+  on?: (event: string, handler: (event: unknown, context: unknown) => unknown | Promise<unknown>) => void;
 }
 
 interface SlashCommandContext {
@@ -104,7 +105,19 @@ function evaluator(configOptions: ResolveConfigOptions) {
 export default function piLaya(pi: PiLike, configOptions: ResolveConfigOptions = {}): void {
   let currentContext: unknown;
   pi.on?.("session_start", (_event, context) => { currentContext = context; });
-  const evaluate = evaluator(configOptions);
+  const evaluateRaw = evaluator(configOptions);
+  const stats = { requests: 0, tokens: 0, lastError: "" };
+  const evaluate = async (callId: string, params: unknown, signal?: AbortSignal) => {
+    stats.requests++;
+    try {
+      const result = await evaluateRaw(callId, params, signal);
+      stats.tokens += Object.values(result.usage ?? {}).filter((value) => typeof value === "number" && Number.isFinite(value)).reduce((total, value) => total + value, 0);
+      return result;
+    } catch (error) {
+      stats.lastError = error instanceof Error ? error.message : String(error);
+      throw error;
+    }
+  };
   const present = (result: unknown) => ({ content: [{ type: "text", text: JSON.stringify(result) }], details: result });
   const execute = async (callId: string, params: unknown, signal?: AbortSignal) => present(await evaluate(callId, params, signal));
   const compact = async (callId: string, params: unknown, signal?: AbortSignal) => {
@@ -288,12 +301,17 @@ export default function piLaya(pi: PiLike, configOptions: ResolveConfigOptions =
     },
   });
   if ((configOptions.env ?? process.env).PI_LAYA_ENABLE_SYSTEM_ONE_ALIAS === "true") pi.registerTool({ name: "laya_system_one", ...tool });
+  registerLayaCommands(pi, configOptions, async (request, signal) => await evaluate(`command:${Date.now()}`, request, signal), stats);
 }
 
 async function readSlashJson(args: string, context: SlashCommandContext, usage: string): Promise<unknown> {
   const path = args.trim();
   if (!path || path === "--help") throw new Error(`Usage: ${usage}`);
-  return JSON.parse(await readFile(resolve(context.cwd ?? process.cwd(), path), "utf8"));
+  try {
+    return JSON.parse(await readFile(resolve(context.cwd ?? process.cwd(), path), "utf8"));
+  } catch (error) {
+    throw new Error(`Cannot read valid JSON from ${path}: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 function displayDetails(pi: PiLike, context: SlashCommandContext, customType: string, details: unknown): void {
