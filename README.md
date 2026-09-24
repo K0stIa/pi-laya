@@ -87,8 +87,12 @@ summaries rather than raw context, diffs, prompts, or credentials.
 `/laya_compact` invokes the compaction adapter from Pi's slash menu and builds a
 bounded snapshot from Pi's active, compaction-aware context. User messages,
 existing compaction summaries, custom messages, and the two newest entries are
-protected. If it has more than 20 removable entries, it refuses rather than
-silently grouping or omitting context.
+protected. When it has more than four removable entries, it groups all of them
+into four labelled batches without dropping captured text or tool calls. Minis
+evaluates those batches; protected entries stay separate. Image or other
+unsupported non-text content, oversized requests, or low-confidence choices
+fail safely or abstain. Use native `/compact` when advisory planning cannot
+cover the active context.
 
 `/laya_compact <snapshot.json>` remains available for an explicitly grouped or
 curated snapshot. The file must contain `items` and `policy` matching the
@@ -162,7 +166,7 @@ Restart Pi or run `/reload` after you install or update the extension.
 | Command | What it does | How to use it |
 | --- | --- | --- |
 | `/laya_compact` | Builds an active-context compaction plan. It protects user messages, existing summaries, custom messages, and the two newest entries. | Run `/laya_compact`. Review the displayed `KEEP`, `DROP`, and `TRUNCATE` plan. It does not modify session context. |
-| `/laya_compact <snapshot.json>` | Plans compaction for a curated or grouped snapshot. | Supply a JSON payload matching the `laya_compact` tool input. Use this when active context has more than 20 removable items. |
+| `/laya_compact <snapshot.json>` | Plans compaction for a manually curated snapshot. | Supply a JSON payload matching the `laya_compact` tool input. The no-path command groups active context automatically; use a file only for a different snapshot. |
 | `/laya_compact history` | Shows recorded compaction plans and their outcomes for the current Pi session. | Run it after one or more plans. Metadata is stored without raw context text. |
 | `/laya_compact outcome <plan-id> <status>` | Records what happened after reviewing a plan. | Copy the short ID from the plan heading and choose `accepted`, `rejected`, `succeeded`, or `failed`. |
 | `/laya_inventory_route <skill\|tool\|model> <task>` | Ranks one currently installed skill, active tool, or available model for a task. | Example: `/laya_inventory_route model review a complex multi-file change`. The result does not enable a skill or switch models. |

@@ -135,6 +135,77 @@ test("/laya_compact snapshots active Pi context when called without arguments", 
   }
 });
 
+test("/laya_compact without a path groups a complete active session over 20 removable entries", async () => {
+  const originalFetch = globalThis.fetch;
+  const assistants = Array.from({ length: 42 }, (_, index) => ({ id: `assistant-${index}`, type: "message", message: { role: "assistant", content: [{ type: "text", text: `result ${index}` }] } }));
+  const user = (id, text) => ({ id, type: "message", message: { role: "user", content: [{ type: "text", text }] } });
+  const entries = [
+    user("goal", "Keep original goal"), ...assistants.slice(0, 10),
+    user("decision", "Keep a decision"), ...assistants.slice(10),
+    { id: "recent", type: "message", message: { role: "assistant", content: [{ type: "text", text: "Recent analysis" }] } },
+    { id: "current", type: "message", message: { role: "assistant", content: [{ type: "text", text: "Current result" }] } },
+  ];
+  const before = JSON.stringify(entries);
+  let request;
+  globalThis.fetch = async (_url, init) => {
+    request = JSON.parse(String(init?.body));
+    return new Response(JSON.stringify({ answers: Object.fromEntries(Object.keys(request.questions).map((id) => [id, { type: "choice", choice: "DROP", probabilities: { KEEP: 0.01, DROP: 0.98, TRUNCATE: 0.01 } }])) }));
+  };
+  try {
+    const commands = [];
+    const messages = [];
+    const notices = [];
+    extensionModule.default({ registerTool: () => {}, registerCommand: (name, command) => commands.push({ name, command }), sendMessage: (message) => messages.push(message) }, { env: { PI_LAYA_BASE_URL: "https://laya.example.com", PI_LAYA_API_TOKEN: "test-token" } });
+    await commands[0].command.handler("", { sessionManager: { buildContextEntries: () => entries }, ui: { notify: (...args) => notices.push(args) } });
+    assert.deepEqual(notices, []);
+    assert.equal(Object.keys(request.questions).length, 4);
+    const state = request.state.items;
+    assert.deepEqual(state.filter((item) => item.protected).map((item) => item.id), ["goal", "decision", "recent", "current"]);
+    const grouped = state.filter((item) => !item.protected);
+    assert.deepEqual(grouped.flatMap((group) => JSON.parse(group.text)), assistants.map((entry) => ({ position: entries.indexOf(entry), id: entry.id, text: entry.message.content[0].text })));
+    assert.equal(grouped.reduce((sum, item) => sum + item.tokenEstimate, 0), assistants.reduce((sum, item) => sum + Math.ceil(item.message.content[0].text.length / 4), 0));
+    assert.match(messages[0].content, /DROP \(4\): group 1/);
+    assert.match(messages[0].content, /no Pi session entries were changed/);
+    assert.equal(JSON.stringify(entries), before);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test("/laya_compact includes tool calls in active-context text instead of losing them", async () => {
+  const originalFetch = globalThis.fetch;
+  let request;
+  globalThis.fetch = async (_url, init) => {
+    request = JSON.parse(String(init?.body));
+    return new Response(JSON.stringify({ answers: { "item:tool-call": { type: "choice", choice: "DROP", probabilities: { KEEP: 0.01, DROP: 0.98, TRUNCATE: 0.01 } } } }));
+  };
+  try {
+    const commands = [];
+    extensionModule.default({ registerTool: () => {}, registerCommand: (name, command) => commands.push({ name, command }) }, { env: { PI_LAYA_BASE_URL: "https://laya.example.com", PI_LAYA_API_TOKEN: "test-token" } });
+    await commands[0].command.handler("", { sessionManager: { buildContextEntries: () => [
+      { id: "tool-call", type: "message", message: { role: "assistant", content: [{ type: "text", text: "Inspect workspace" }, { type: "toolCall", id: "call-1", name: "bash", arguments: { command: "pwd" } }] } },
+      { id: "goal", type: "message", message: { role: "user", content: [{ type: "text", text: "Keep goal" }] } },
+      { id: "latest", type: "message", message: { role: "assistant", content: [{ type: "text", text: "Latest" }] } },
+    ] }, ui: { notify: () => {} } });
+    assert.match(request.state.items[0].text, /"name":"bash"/);
+    assert.match(request.state.items[0].text, /"command":"pwd"/);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test("/laya_compact refuses active non-text content rather than claiming complete coverage", async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => { calls += 1; throw new Error("transport must not run"); };
+  try {
+    const commands = [];
+    const notices = [];
+    extensionModule.default({ registerTool: () => {}, registerCommand: (name, command) => commands.push({ name, command }) }, { env: { PI_LAYA_BASE_URL: "https://laya.example.com", PI_LAYA_API_TOKEN: "test-token" } });
+    await commands[0].command.handler("", { sessionManager: { buildContextEntries: () => [
+      { id: "image", type: "message", message: { role: "user", content: [{ type: "text", text: "Review this" }, { type: "image", data: "sample" }] } },
+    ] }, ui: { notify: (...args) => notices.push(args) } });
+    assert.equal(calls, 0);
+    assert.match(notices[0][0], /non-text content.*use \/compact/);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
 test("/laya_compact returns a local abstention without transport when every entry is protected", async () => {
   const originalFetch = globalThis.fetch;
   let calls = 0;

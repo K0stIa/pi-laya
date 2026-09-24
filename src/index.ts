@@ -61,6 +61,8 @@ interface PersistedCompactionOutcome {
 const PLAN_ENTRY_TYPE = "laya_compaction_plan";
 const OUTCOME_ENTRY_TYPE = "laya_compaction_outcome";
 const OUTCOME_STATUSES: readonly OutcomeStatus[] = ["accepted", "rejected", "succeeded", "failed"];
+// Minis CPU inference times out on larger automatic choice batches.
+const ACTIVE_COMPACTION_GROUPS = 4;
 
 const question = Type.Union([
   Type.Object({
@@ -162,11 +164,11 @@ export default function piLaya(pi: PiLike, configOptions: ResolveConfigOptions =
         return;
       }
       try {
-        const automatic = !inputPath;
-        const input = automatic ? activeContextCompactionInput(context) : JSON.parse(await readFile(resolve(context.cwd ?? process.cwd(), inputPath), "utf8"));
+        const snapshot = inputPath ? undefined : activeContextCompactionInput(context);
+        const input = snapshot ?? JSON.parse(await readFile(resolve(context.cwd ?? process.cwd(), inputPath), "utf8"));
         const result = await compact(`slash:${Date.now()}`, input);
         const plan = result.details as CompactionPlan;
-        const labels = automatic ? labelsForActiveContext(context) : labelsForItems(input.items);
+        const labels = snapshot ? snapshot.labels : labelsForItems(input.items);
         persistPlan(context, plan, labels);
         displayPlan(pi, context, plan, labels);
       } catch (error) {
@@ -364,8 +366,7 @@ function labelsForItems(items: unknown): Record<string, string> {
     : []));
 }
 
-function labelsForActiveContext(context: SlashCommandContext): Record<string, string> {
-  const entries = context.sessionManager?.buildContextEntries() ?? [];
+function labelsForActiveContext(entries: readonly unknown[]): Record<string, string> {
   const labels: Record<string, string> = {};
   entries.forEach((entry, index) => {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) return;
@@ -444,30 +445,61 @@ function isPersistedOutcome(value: unknown): value is PersistedCompactionOutcome
     && typeof (value as Record<string, unknown>).inputDigest === "string" && OUTCOME_STATUSES.includes((value as Record<string, unknown>).status as OutcomeStatus);
 }
 
-function activeContextCompactionInput(context: SlashCommandContext): { items: SnapshotItem[]; policy: Record<string, unknown> } {
+function activeContextCompactionInput(context: SlashCommandContext): { items: SnapshotItem[]; policy: Record<string, unknown>; labels: Record<string, string> } {
   const entries = context.sessionManager?.buildContextEntries();
-  if (!entries) throw new Error("Active Pi session context is unavailable; pass a snapshot.json file instead");
+  if (!entries) throw new Error("Active Pi session context is unavailable; use /compact instead");
   const items = entries.flatMap((entry, index) => contextEntryToItem(entry, index));
   if (items.length === 0) throw new Error("Active Pi session has no textual context to compact");
-  // Tool/assistant entries are the only automatic removal candidates. The
-  // current user intent, previous compaction summaries, and the two newest
-  // context entries remain protected. The API accepts at most 20 decisions.
+  // Keep user intent, earlier summaries, and the newest two entries intact.
   const protectedStart = Math.max(0, items.length - 2);
   for (let index = protectedStart; index < items.length; index += 1) items[index]!.protected = true;
-  const removableCount = items.filter((item) => !item.protected).length;
-  if (removableCount > 20) throw new Error("Active context has more than 20 removable items; pass a grouped snapshot.json file instead");
+  const labels = labelsForActiveContext(entries);
+  const grouped = groupRemovableItems(items, labels);
   const totalTokens = items.reduce((total, item) => total + item.tokenEstimate, 0);
   return {
-    items,
+    items: grouped,
+    labels: Object.fromEntries(grouped.map((item) => [item.id, labels[item.id] ?? "item"])),
     policy: {
       coverage: "profile_checked",
       targetTokens: Math.floor(totalTokens * 0.7),
       truncateTokenLimit: 512,
       threshold: 0.9,
       margin: 0.2,
-      budget: removableCount,
+      budget: grouped.filter((item) => !item.protected).length,
     },
   };
+}
+
+function groupRemovableItems(items: SnapshotItem[], labels: Record<string, string>): SnapshotItem[] {
+  const removable = items.filter((item) => !item.protected);
+  if (removable.length <= ACTIVE_COMPACTION_GROUPS) return items;
+  const groups = new Map<SnapshotItem, SnapshotItem>();
+  const positions = new Map(items.map((item, index) => [item, index]));
+  const existingIds = new Set(items.map((item) => item.id));
+  for (let index = 0; index < ACTIVE_COMPACTION_GROUPS; index += 1) {
+    const start = Math.floor(index * removable.length / ACTIVE_COMPACTION_GROUPS);
+    const end = Math.floor((index + 1) * removable.length / ACTIVE_COMPACTION_GROUPS);
+    const members = removable.slice(start, end);
+    let id = `group-${index + 1}`;
+    while (existingIds.has(id)) id = `laya-${id}`;
+    existingIds.add(id);
+    // JSON retains text, IDs, and original chronology across protected entries.
+    const group: SnapshotItem = {
+      id,
+      text: JSON.stringify(members.map((item) => ({ position: positions.get(item), id: item.id, text: item.text }))),
+      tokenEstimate: members.reduce((sum, item) => sum + item.tokenEstimate, 0),
+    };
+    labels[id] = `group ${index + 1} (${members.length} entries, ${labels[members[0]!.id] ?? "first"} to ${labels[members[members.length - 1]!.id] ?? "last"})`;
+    for (const member of members) groups.set(member, group);
+  }
+  const seen = new Set<SnapshotItem>();
+  return items.flatMap((item) => {
+    if (item.protected) return [item];
+    const group = groups.get(item)!;
+    if (seen.has(group)) return [];
+    seen.add(group);
+    return [group];
+  });
 }
 
 function contextEntryToItem(entry: unknown, index: number): SnapshotItem[] {
@@ -492,10 +524,17 @@ function contextEntryToItem(entry: unknown, index: number): SnapshotItem[] {
 
 function textFromContent(content: unknown): string {
   if (typeof content === "string") return content.trim();
-  if (!Array.isArray(content)) return "";
-  return content.flatMap((part) => part && typeof part === "object" && !Array.isArray(part) && (part as Record<string, unknown>).type === "text" && typeof (part as Record<string, unknown>).text === "string"
-    ? [(part as Record<string, string>).text]
-    : []).join("\n").trim();
+  if (content === undefined || content === null) return "";
+  if (!Array.isArray(content)) throw new Error("Active Pi session contains non-text content; use /compact instead");
+  const texts: string[] = [];
+  for (const part of content) {
+    if (!part || typeof part !== "object" || Array.isArray(part)) throw new Error("Active Pi session contains non-text content; use /compact instead");
+    const value = part as Record<string, unknown>;
+    if (value.type === "text" && typeof value.text === "string") texts.push(value.text);
+    else if (value.type === "toolCall") texts.push(JSON.stringify(value));
+    else throw new Error("Active Pi session contains non-text content; use /compact instead");
+  }
+  return texts.join("\n").trim();
 }
 
 function estimateTokens(text: string): number {
