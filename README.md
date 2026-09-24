@@ -16,6 +16,18 @@ browser and computer decision placements through `laya_decide`. Every result
 is probability- and policy-gated advice; Pi or the calling workflow remains
 responsible for executing, rejecting, or escalating it.
 
+### Capability coverage
+
+| Post capability | `pi-laya` status |
+| --- | --- |
+| Browser agent | Generic `laya_decide` placement for next-action decisions; no browser driver or automation. |
+| Context compaction | Implemented: `laya_compact` with protected items, `KEEP`/`DROP`/`TRUNCATE`, plans, history, and outcomes. |
+| Skill selection | Implemented: `laya_inventory_route` selects only from Pi’s active skill inventory. |
+| Model routing | Implemented: `laya_inventory_route` selects only from available Pi models; it does not switch models. |
+| Computer use | Generic `laya_decide` placement; no desktop, OCR, or action driver. |
+| Agent supervision | Implemented: `laya_supervise` returns bounded `continue`/`retry`/`steer`/`stop`/`human` advice; the caller owns persistence and enforcement of its retry and step budgets. |
+| Code review | Implemented: `laya_review` runs staged diff-risk checks and routes risky or uncertain changes to human review. |
+
 ## Install
 
 Build the local checkout, then install that directory into Pi:
@@ -121,22 +133,23 @@ recorded plans and outcomes. After reviewing a plan, record what happened with
 
 ### Slash commands for advisory adapters
 
-All Pi-facing adapters can be invoked without asking the main agent to choose a
-tool:
+These commands make the adapters available directly from Pi’s slash menu; a
+restart or `/reload` is required after installing or updating the extension.
 
-```text
-/laya_compact [snapshot.json]
-/laya_compact history
-/laya_compact outcome <plan-id> <accepted|rejected|succeeded|failed>
-/laya_inventory_route <skill|tool|model> <task>
-/laya_decide <request.json>
-/laya_review <request.json>
-/laya_supervise <request.json>
-```
+| Command | What it does | How to use it |
+| --- | --- | --- |
+| `/laya_compact` | Builds an active-context compaction plan. It protects user messages, existing summaries, custom messages, and the two newest entries. | Run `/laya_compact`. Review the displayed `KEEP`, `DROP`, and `TRUNCATE` plan; it does not modify session context. |
+| `/laya_compact <snapshot.json>` | Plans compaction for a curated or grouped snapshot. | Supply a JSON payload matching the `laya_compact` tool input. Use this when active context has more than 20 removable items. |
+| `/laya_compact history` | Shows recorded compaction plans and their outcomes for the current Pi session. | Run it after one or more plans. Metadata is stored without raw context text. |
+| `/laya_compact outcome <plan-id> <status>` | Records what happened after reviewing a plan. | Copy the short ID from the plan heading and choose `accepted`, `rejected`, `succeeded`, or `failed`. |
+| `/laya_inventory_route <skill\|tool\|model> <task>` | Ranks one currently installed skill, active tool, or available model for a task. | Example: `/laya_inventory_route model review a complex multi-file change`. The result does not enable a skill or switch models. |
+| `/laya_decide <request.json>` | Evaluates typed `choice`, `score`, or `noul` questions for any supported placement, including browser and computer decisions. | Supply a JSON request matching `laya_decide`; inspect the probability-gated proposal before taking host-side action. |
+| `/laya_review <request.json>` | Performs staged diff-risk checks. | Supply `{ diff, complete, binary, policy }`. Complete textual diffs can receive pass advice; incomplete, binary, risky, or uncertain diffs route to human review. |
+| `/laya_supervise <request.json>` | Provides bounded advice for an agent’s next supervision action. | Supply `{ summary, state?, limits, policy }`; persist the returned state and enforce the budgets in your workflow. |
 
-The JSON-file commands accept the same payload as their corresponding tool.
-They display advisory results only; none changes context, changes a model,
-executes an action, or controls an agent.
+The JSON-file commands accept the same payload as their corresponding tools.
+Every result is advisory: none changes context, switches a model, executes an
+action, retries an agent, or approves a change.
 
 ## Tool payloads
 
@@ -198,3 +211,13 @@ npm test
 npm run typecheck
 npm run privacy:check
 ```
+
+## CI and releases
+
+GitHub Actions runs the build, tests, typecheck, privacy check, and package
+contents check for pull requests and pushes to `main`, using Node 22.20.3.
+
+Pushing an annotated tag matching the package version, such as `v0.1.0`, runs
+the same verification and creates a GitHub Release with the packed `.tgz`
+artifact and generated release notes. The package is intentionally private, so
+the release workflow does not publish to npm or require an npm token.

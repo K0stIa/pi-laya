@@ -1,0 +1,45 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  github-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22.20.3
+          cache: npm
+          cache-dependency-path: package.json
+      - name: Verify tag matches package version
+        run: |
+          release_version="${GITHUB_REF_NAME#v}"
+          package_version="$(node -p "require('./package.json').version")"
+          test "$release_version" = "$package_version"
+      - name: Install dependencies
+        run: npm install --ignore-scripts
+      - name: Verify release candidate
+        run: |
+          npm run build
+          npm test
+          npm run typecheck
+          npm run privacy:check
+      - name: Build release artifact
+        run: npm pack --ignore-scripts --pack-destination artifacts
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" artifacts/*.tgz --verify-tag --generate-notes
