@@ -52,7 +52,7 @@ jobs:
           mkdir -p artifacts
           npm pack --ignore-scripts --pack-destination artifacts
       - name: Upload verified release artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: pi-laya-package
           path: artifacts/*.tgz
@@ -71,11 +71,16 @@ jobs:
           fetch-depth: 0
           ref: ${{ inputs.tag || github.ref }}
       - name: Download verified release artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v6
         with:
           name: pi-laya-package
           path: artifacts
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$RELEASE_TAG" artifacts/*.tgz --verify-tag --generate-notes
+        run: |
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "GitHub Release $RELEASE_TAG already exists; verified artifact was not republished."
+          else
+            gh release create "$RELEASE_TAG" artifacts/*.tgz --verify-tag --generate-notes
+          fi
