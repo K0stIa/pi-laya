@@ -69,6 +69,39 @@ only—none changes Pi context, enables a skill, switches a model, blocks a tool
 retries an agent, or approves a change. Traces retain digests and decision
 summaries rather than raw context, diffs, prompts, or credentials.
 
+### Slash command: context-compaction plan
+
+`/laya_compact` invokes the compaction adapter from Pi's slash menu and builds a
+bounded snapshot from Pi's active, compaction-aware context. User messages,
+existing compaction summaries, custom messages, and the two newest entries are
+protected. If it has more than 20 removable entries, it refuses rather than
+silently grouping or omitting context.
+
+`/laya_compact <snapshot.json>` remains available for an explicitly grouped or
+curated snapshot. The file must contain `items` and `policy` matching the
+`laya_compact` tool input, for example:
+
+```json
+{
+  "items": [
+    { "id": "goal", "text": "Current task and constraints", "tokenEstimate": 120, "protected": true },
+    { "id": "old-output", "text": "Superseded command output", "tokenEstimate": 900 }
+  ],
+  "policy": {
+    "coverage": "profile_checked",
+    "targetTokens": 500,
+    "truncateTokenLimit": 200,
+    "threshold": 0.9,
+    "margin": 0.2,
+    "budget": 1
+  }
+}
+```
+
+The command displays a reversible plan; it never applies `DROP` or `TRUNCATE`
+to Pi's session automatically. Use `/laya_compact --help` for the in-Pi usage
+reminder.
+
 ## Tool payloads
 
 `laya_evaluate` accepts a structured state and one or more typed questions:

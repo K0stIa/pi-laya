@@ -1,4 +1,6 @@
 import { Type } from "typebox";
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import { LayaClient } from "./client.js";
 import { resolveConfig, type ResolveConfigOptions } from "./config.js";
 import { DECISION_PLACEMENTS, makeDecisionProposal, validateDecisionRequest } from "./proposals.js";
@@ -18,7 +20,22 @@ interface PiTool {
 
 export interface PiLike {
   registerTool(tool: PiTool): void;
+  registerCommand?: (name: string, options: { description?: string; handler: (args: string, context: SlashCommandContext) => Promise<void> }) => void;
+  sendMessage?: (message: { customType: string; content: string; display: boolean }) => void;
   on?: (event: string, handler: (event: unknown, context: unknown) => void | Promise<void>) => void;
+}
+
+interface SlashCommandContext {
+  cwd?: string;
+  sessionManager?: { buildContextEntries(): unknown[] };
+  ui: { notify(message: string, level?: "info" | "warning" | "error"): void };
+}
+
+interface SnapshotItem {
+  id: string;
+  text: string;
+  tokenEstimate: number;
+  protected?: boolean;
 }
 
 const question = Type.Union([
@@ -67,6 +84,12 @@ export default function piLaya(pi: PiLike, configOptions: ResolveConfigOptions =
   const evaluate = evaluator(configOptions);
   const present = (result: unknown) => ({ content: [{ type: "text", text: JSON.stringify(result) }], details: result });
   const execute = async (callId: string, params: unknown, signal?: AbortSignal) => present(await evaluate(callId, params, signal));
+  const compact = async (callId: string, params: unknown, signal?: AbortSignal) => {
+    const input = params as { items: unknown[]; policy: Record<string, unknown> };
+    const request = buildCompactionRequest(input.items as never[], input.policy as never);
+    const result = await evaluate(callId, request, signal);
+    return present(makeCompactionPlan(input.items as never[], result, input.policy as never));
+  };
   const tool = {
     label: "Laya Evaluate",
     description: "Request typed choice, score, or noul decisions over structured state. It does not generate prose or execute actions.",
@@ -81,11 +104,27 @@ export default function piLaya(pi: PiLike, configOptions: ResolveConfigOptions =
     description: "Return a reversible, non-executable KEEP/DROP/TRUNCATE plan. It never edits Pi session history or context.",
     promptSnippet: "Use only with a complete, normalized context snapshot and preserve protected evidence.",
     parameters: Type.Object({ items: Type.Array(Type.Object({ id: Type.String(), text: Type.String(), tokenEstimate: Type.Integer({ minimum: 0 }), protected: Type.Optional(Type.Boolean()), pairId: Type.Optional(Type.String()) })), policy: Type.Object({ coverage: Type.Union([Type.Literal("unchecked"), Type.Literal("profile_checked")]), targetTokens: Type.Integer({ minimum: 0 }), truncateTokenLimit: Type.Integer({ minimum: 0 }), threshold: Type.Number({ minimum: 0, maximum: 1 }), margin: Type.Number({ minimum: 0, maximum: 1 }), budget: Type.Integer({ minimum: 0, maximum: 20 }) }) }),
-    execute: async (callId, params, signal) => {
-      const input = params as { items: unknown[]; policy: Record<string, unknown> };
-      const request = buildCompactionRequest(input.items as never[], input.policy as never);
-      const result = await evaluate(callId, request, signal);
-      return present(makeCompactionPlan(input.items as never[], result, input.policy as never));
+    execute: compact,
+  });
+  pi.registerCommand?.("laya_compact", {
+    description: "Create an advisory Laya KEEP/DROP/TRUNCATE plan for the active Pi context",
+    handler: async (args, context) => {
+      const inputPath = args.trim();
+      if (inputPath === "--help") {
+        context.ui.notify("Usage: /laya_compact [snapshot.json]. With no file, it snapshots active Pi context. It only returns a reversible plan.", "info");
+        return;
+      }
+      try {
+        const input = inputPath
+          ? JSON.parse(await readFile(resolve(context.cwd ?? process.cwd(), inputPath), "utf8"))
+          : activeContextCompactionInput(context);
+        const result = await compact(`slash:${Date.now()}`, input);
+        const text = JSON.stringify(result.details);
+        if (pi.sendMessage) pi.sendMessage({ customType: "laya_compaction_plan", content: text, display: true });
+        else context.ui.notify(text, "info");
+      } catch (error) {
+        context.ui.notify(error instanceof Error ? `Laya compaction failed: ${error.message}` : "Laya compaction failed", "error");
+      }
     },
   });
   pi.registerTool({
@@ -152,4 +191,62 @@ export default function piLaya(pi: PiLike, configOptions: ResolveConfigOptions =
     },
   });
   if ((configOptions.env ?? process.env).PI_LAYA_ENABLE_SYSTEM_ONE_ALIAS === "true") pi.registerTool({ name: "laya_system_one", ...tool });
+}
+
+function activeContextCompactionInput(context: SlashCommandContext): { items: SnapshotItem[]; policy: Record<string, unknown> } {
+  const entries = context.sessionManager?.buildContextEntries();
+  if (!entries) throw new Error("Active Pi session context is unavailable; pass a snapshot.json file instead");
+  const items = entries.flatMap((entry, index) => contextEntryToItem(entry, index));
+  if (items.length === 0) throw new Error("Active Pi session has no textual context to compact");
+  // Tool/assistant entries are the only automatic removal candidates. The
+  // current user intent, previous compaction summaries, and the two newest
+  // context entries remain protected. The API accepts at most 20 decisions.
+  const protectedStart = Math.max(0, items.length - 2);
+  for (let index = protectedStart; index < items.length; index += 1) items[index]!.protected = true;
+  const removableCount = items.filter((item) => !item.protected).length;
+  if (removableCount > 20) throw new Error("Active context has more than 20 removable items; pass a grouped snapshot.json file instead");
+  const totalTokens = items.reduce((total, item) => total + item.tokenEstimate, 0);
+  return {
+    items,
+    policy: {
+      coverage: "profile_checked",
+      targetTokens: Math.floor(totalTokens * 0.7),
+      truncateTokenLimit: 512,
+      threshold: 0.9,
+      margin: 0.2,
+      budget: removableCount,
+    },
+  };
+}
+
+function contextEntryToItem(entry: unknown, index: number): SnapshotItem[] {
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
+  const value = entry as Record<string, unknown>;
+  const id = typeof value.id === "string" ? value.id : `context-${index}`;
+  const type = value.type;
+  if (type === "compaction" || type === "branch_summary") {
+    const text = typeof value.summary === "string" ? value.summary.trim() : "";
+    return text ? [{ id, text, tokenEstimate: estimateTokens(text), protected: true }] : [];
+  }
+  if (type === "custom_message") {
+    const text = textFromContent(value.content);
+    return text ? [{ id, text, tokenEstimate: estimateTokens(text), protected: true }] : [];
+  }
+  if (type !== "message" || !value.message || typeof value.message !== "object" || Array.isArray(value.message)) return [];
+  const message = value.message as Record<string, unknown>;
+  const text = textFromContent(message.content);
+  if (!text) return [];
+  return [{ id, text, tokenEstimate: estimateTokens(text), protected: message.role === "user" || message.role === "system" }];
+}
+
+function textFromContent(content: unknown): string {
+  if (typeof content === "string") return content.trim();
+  if (!Array.isArray(content)) return "";
+  return content.flatMap((part) => part && typeof part === "object" && !Array.isArray(part) && (part as Record<string, unknown>).type === "text" && typeof (part as Record<string, unknown>).text === "string"
+    ? [(part as Record<string, string>).text]
+    : []).join("\n").trim();
+}
+
+function estimateTokens(text: string): number {
+  return Math.max(1, Math.ceil(text.length / 4));
 }

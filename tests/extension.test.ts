@@ -1,6 +1,9 @@
 // @ts-nocheck
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import * as extensionModule from "../src/index.js";
 
 test("extension registers advisory tools by default and makes no request at load", () => {
@@ -9,6 +12,57 @@ test("extension registers advisory tools by default and makes no request at load
   const tools = [];
   extension({ registerTool: (tool) => tools.push(tool) }, { env: {} });
   assert.deepEqual(tools.map((tool) => tool.name), ["laya_evaluate", "laya_compact", "laya_review", "laya_inventory_route", "laya_supervise", "laya_decide"]);
+});
+
+test("extension registers /laya_compact and returns an advisory plan from a snapshot file", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    answers: { "item:old": { type: "choice", choice: "DROP", probabilities: { KEEP: 0.02, DROP: 0.96, TRUNCATE: 0.02 } } },
+  }));
+  try {
+    const commands = [];
+    const messages = [];
+    extensionModule.default({ registerTool: () => {}, registerCommand: (name, command) => commands.push({ name, command }), sendMessage: (message) => messages.push(message) }, { env: { PI_LAYA_BASE_URL: "https://laya.example.com", PI_LAYA_API_TOKEN: "test-token" } });
+    assert.equal(commands[0].name, "laya_compact");
+    const directory = await mkdtemp(join(tmpdir(), "pi-laya-command-"));
+    await writeFile(join(directory, "snapshot.json"), JSON.stringify({
+      items: [{ id: "old", text: "stale output", tokenEstimate: 100 }],
+      policy: { coverage: "profile_checked", targetTokens: 0, truncateTokenLimit: 10, threshold: 0.9, margin: 0.2, budget: 1 },
+    }));
+    const notices = [];
+    await commands[0].command.handler("snapshot.json", { cwd: directory, ui: { notify: (...args) => notices.push(args) } });
+    assert.equal(notices.length, 0);
+    const plan = JSON.parse(messages[0].content);
+    assert.deepEqual(plan.dropIds, ["old"]);
+    assert.equal(plan.executable, false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("/laya_compact snapshots active Pi context when called without arguments", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    answers: { "item:old": { type: "choice", choice: "DROP", probabilities: { KEEP: 0.02, DROP: 0.96, TRUNCATE: 0.02 } } },
+  }));
+  try {
+    const commands = [];
+    const messages = [];
+    extensionModule.default({ registerTool: () => {}, registerCommand: (name, command) => commands.push({ name, command }), sendMessage: (message) => messages.push(message) }, { env: { PI_LAYA_BASE_URL: "https://laya.example.com", PI_LAYA_API_TOKEN: "test-token" } });
+    const notices = [];
+    await commands[0].command.handler("", {
+      sessionManager: { buildContextEntries: () => [
+        { id: "old", type: "message", message: { role: "assistant", content: [{ type: "text", text: "obsolete tool analysis" }] } },
+        { id: "goal", type: "message", message: { role: "user", content: [{ type: "text", text: "keep current goal" }] } },
+        { id: "current", type: "message", message: { role: "assistant", content: [{ type: "text", text: "current result" }] } },
+      ] },
+      ui: { notify: (...args) => notices.push(args) },
+    });
+    assert.equal(notices.length, 0);
+    assert.deepEqual(JSON.parse(messages[0].content).dropIds, ["old"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("extension enables compatibility alias only when opted in", () => {
