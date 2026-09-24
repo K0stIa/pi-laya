@@ -5,6 +5,17 @@ It sends structured `choice`, `score`, and `noul` requests to a Laya-compatible
 service; it does not generate prose, operate browsers or computers, or execute
 the selected action.
 
+## Decision-layer approach
+
+This extension follows the small, typed-decision pattern outlined in
+[the Jev skills overview](https://x.com/k2sbhai/status/2101657436696547773):
+**state → Laya decision → host-owned action**. `pi-laya` implements the Pi-side
+adapters for context retention, installed skill/tool and model selection,
+agent supervision, and staged diff-review routing. It also exposes generic
+browser and computer decision placements through `laya_decide`. Every result
+is probability- and policy-gated advice; Pi or the calling workflow remains
+responsible for executing, rejecting, or escalating it.
+
 ## Install
 
 Build the local checkout, then install that directory into Pi:
@@ -101,6 +112,31 @@ curated snapshot. The file must contain `items` and `policy` matching the
 The command displays a reversible plan; it never applies `DROP` or `TRUNCATE`
 to Pi's session automatically. Use `/laya_compact --help` for the in-Pi usage
 reminder.
+
+Each plan is stored in the current Pi session as privacy-preserving metadata:
+entry labels, token estimates, plan IDs, decisions, policy, and digest-based
+traces—never raw context text. Use `/laya_compact history` to display all
+recorded plans and outcomes. After reviewing a plan, record what happened with
+`/laya_compact outcome <plan-id> accepted|rejected|succeeded|failed`.
+
+### Slash commands for advisory adapters
+
+All Pi-facing adapters can be invoked without asking the main agent to choose a
+tool:
+
+```text
+/laya_compact [snapshot.json]
+/laya_compact history
+/laya_compact outcome <plan-id> <accepted|rejected|succeeded|failed>
+/laya_inventory_route <skill|tool|model> <task>
+/laya_decide <request.json>
+/laya_review <request.json>
+/laya_supervise <request.json>
+```
+
+The JSON-file commands accept the same payload as their corresponding tool.
+They display advisory results only; none changes context, changes a model,
+executes an action, or controls an agent.
 
 ## Tool payloads
 

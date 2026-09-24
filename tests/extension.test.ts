@@ -14,6 +14,12 @@ test("extension registers advisory tools by default and makes no request at load
   assert.deepEqual(tools.map((tool) => tool.name), ["laya_evaluate", "laya_compact", "laya_review", "laya_inventory_route", "laya_supervise", "laya_decide"]);
 });
 
+test("extension registers slash commands for every advisory adapter", () => {
+  const commands = [];
+  extensionModule.default({ registerTool: () => {}, registerCommand: (name, command) => commands.push({ name, command }) }, { env: {} });
+  assert.deepEqual(commands.map((command) => command.name), ["laya_compact", "laya_decide", "laya_review", "laya_inventory_route", "laya_supervise"]);
+});
+
 test("extension registers /laya_compact and returns an advisory plan from a snapshot file", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => new Response(JSON.stringify({
@@ -32,9 +38,9 @@ test("extension registers /laya_compact and returns an advisory plan from a snap
     const notices = [];
     await commands[0].command.handler("snapshot.json", { cwd: directory, ui: { notify: (...args) => notices.push(args) } });
     assert.equal(notices.length, 0);
-    const plan = JSON.parse(messages[0].content);
-    assert.deepEqual(plan.dropIds, ["old"]);
-    assert.equal(plan.executable, false);
+    assert.match(messages[0].content, /Laya compaction .* — PROPOSED/);
+    assert.match(messages[0].content, /DROP \(1\): item 1 \(old\)/);
+    assert.match(messages[0].content, /no Pi session entries were changed/);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -59,7 +65,59 @@ test("/laya_compact snapshots active Pi context when called without arguments", 
       ui: { notify: (...args) => notices.push(args) },
     });
     assert.equal(notices.length, 0);
-    assert.deepEqual(JSON.parse(messages[0].content).dropIds, ["old"]);
+    assert.match(messages[0].content, /DROP \(1\): assistant 1 \(old\)/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("/laya_compact returns a local abstention without transport when every entry is protected", async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => { calls += 1; throw new Error("transport must not run"); };
+  try {
+    const commands = [];
+    const messages = [];
+    extensionModule.default({ registerTool: () => {}, registerCommand: (name, command) => commands.push({ name, command }), sendMessage: (message) => messages.push(message) }, { env: { PI_LAYA_BASE_URL: "https://laya.example.com", PI_LAYA_API_TOKEN: "test-token" } });
+    await commands[0].command.handler("", {
+      sessionManager: { buildContextEntries: () => [{ id: "goal", type: "message", message: { role: "user", content: [{ type: "text", text: "keep me" }] } }] },
+      ui: { notify: () => {} },
+    });
+    assert.equal(calls, 0);
+    assert.match(messages[0].content, /ABSTAINED/);
+    assert.match(messages[0].content, /protected_over_budget/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("/laya_compact persists plan and outcome metadata and shows it in history", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    answers: { "item:old": { type: "choice", choice: "DROP", probabilities: { KEEP: 0.02, DROP: 0.96, TRUNCATE: 0.02 } } },
+  }));
+  try {
+    const commands = [];
+    const messages = [];
+    const entries = [];
+    const sessionManager = {
+      buildContextEntries: () => [
+        { id: "old", type: "message", message: { role: "assistant", content: [{ type: "text", text: "obsolete" }] } },
+        { id: "goal", type: "message", message: { role: "user", content: [{ type: "text", text: "goal" }] } },
+        { id: "current", type: "message", message: { role: "assistant", content: [{ type: "text", text: "current" }] } },
+      ],
+      getBranch: () => entries,
+      appendCustomEntry: (customType, data) => entries.push({ type: "custom", customType, data }),
+    };
+    extensionModule.default({ registerTool: () => {}, registerCommand: (name, command) => commands.push({ name, command }), sendMessage: (message) => messages.push(message) }, { env: { PI_LAYA_BASE_URL: "https://laya.example.com", PI_LAYA_API_TOKEN: "test-token" } });
+    const context = { sessionManager, ui: { notify: () => {} } };
+    await commands[0].command.handler("", context);
+    assert.equal(entries[0].customType, "laya_compaction_plan");
+    const planId = entries[0].data.plan.trace.id;
+    await commands[0].command.handler(`outcome ${planId.slice(0, 8)} accepted`, context);
+    assert.equal(entries[1].customType, "laya_compaction_outcome");
+    await commands[0].command.handler("history", context);
+    assert.match(messages.at(-1).content, /Outcome: accepted/);
   } finally {
     globalThis.fetch = originalFetch;
   }
