@@ -10,6 +10,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "npm run build && node --test dist/tests/*.test.js",
+    "test:pi-commands": "npm run build && node --test dist/tests/extension.test.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "privacy:check": "node dist/src/privacy-scan.js",
     "prepare": "npm run build",

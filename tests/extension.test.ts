@@ -20,6 +20,70 @@ test("extension registers slash commands for every advisory adapter", () => {
   assert.deepEqual(commands.map((command) => command.name), ["laya_compact", "laya_decide", "laya_review", "laya_inventory_route", "laya_supervise"]);
 });
 
+test("every /laya command runs through its registered Pi handler", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (_url, init) => {
+    const request = JSON.parse(String(init?.body));
+    const questions = request.questions;
+    if (questions["item:old"]) {
+      return new Response(JSON.stringify({ answers: { "item:old": { type: "choice", choice: "DROP", probabilities: { KEEP: 0.01, DROP: 0.98, TRUNCATE: 0.01 } } } }));
+    }
+    if (questions.secrets) {
+      return new Response(JSON.stringify({ answers: Object.fromEntries(Object.keys(questions).map((key) => [key, { type: "noul", noul: 0.01 }])) }));
+    }
+    if (questions.select) {
+      const [selected] = Object.keys(questions.select.criteria);
+      return new Response(JSON.stringify({ answers: { select: { type: "choice", choice: selected, probabilities: { [selected]: 1 } } } }));
+    }
+    if (questions.action?.criteria?.click) {
+      return new Response(JSON.stringify({ answers: { action: { type: "choice", choice: "click", probabilities: { click: 0.97, wait: 0.03 } } } }));
+    }
+    return new Response(JSON.stringify({ answers: { action: { type: "choice", choice: "continue", probabilities: { continue: 0.97, retry: 0.01, steer: 0.01, stop: 0.005, human: 0.005 } } } }));
+  };
+  try {
+    const commands = [];
+    const messages = [];
+    let sessionStart;
+    const pi = {
+      registerTool: () => {},
+      registerCommand: (name, command) => commands.push({ name, command }),
+      sendMessage: (message) => messages.push(message),
+      on: (event, handler) => { if (event === "session_start") sessionStart = handler; },
+    };
+    extensionModule.default(pi, { env: { PI_LAYA_BASE_URL: "https://laya.example.com", PI_LAYA_API_TOKEN: "test-token" } });
+    sessionStart({}, {
+      getCommands: () => [{ name: "test-skill", description: "A test skill", source: "skill" }],
+      getAllTools: () => [],
+      getActiveTools: () => [],
+    });
+    const command = Object.fromEntries(commands.map((entry) => [entry.name, entry.command]));
+    const directory = await mkdtemp(join(tmpdir(), "pi-laya-slash-"));
+    await Promise.all([
+      writeFile(join(directory, "decide.json"), JSON.stringify({ placement: "browser", state: { button: "next" }, questions: { action: { type: "choice", instructions: "Choose", criteria: { click: "Click", wait: "Wait" } } }, policy: { threshold: 0.9, margin: 0.2, budget: 1 } })),
+      writeFile(join(directory, "review.json"), JSON.stringify({ diff: "diff --git a/a b/a", complete: true, binary: false, policy: { threshold: 0.9, margin: 0.2, budget: 7, maxBytes: 1024 } })),
+      writeFile(join(directory, "supervise.json"), JSON.stringify({ summary: "A safe task is progressing", limits: { maxSteps: 5, maxRetries: 2, maxFailures: 2 }, policy: { threshold: 0.9, margin: 0.2, budget: 1 } })),
+    ]);
+    const context = {
+      cwd: directory,
+      sessionManager: { buildContextEntries: () => [{ id: "old", type: "message", message: { role: "assistant", content: [{ type: "text", text: "obsolete" }] } }, { id: "goal", type: "message", message: { role: "user", content: [{ type: "text", text: "goal" }] } }, { id: "current", type: "message", message: { role: "assistant", content: [{ type: "text", text: "current" }] } }] },
+      ui: { notify: () => {} },
+    };
+    await command.laya_compact.handler("", context);
+    await command.laya_decide.handler("decide.json", context);
+    await command.laya_review.handler("review.json", context);
+    await command.laya_inventory_route.handler("skill select a relevant skill", context);
+    await command.laya_supervise.handler("supervise.json", context);
+    assert.deepEqual(messages.map((message) => message.customType), ["laya_compaction_plan", "laya_decision", "laya_review", "laya_inventory_route", "laya_supervision"]);
+    assert.match(messages[0].content, /PROPOSED/);
+    assert.match(messages[1].content, /\"click\"/);
+    assert.match(messages[2].content, /pass_advice/);
+    assert.match(messages[3].content, /test-skill/);
+    assert.match(messages[4].content, /\"continue\"/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("extension registers /laya_compact and returns an advisory plan from a snapshot file", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => new Response(JSON.stringify({

@@ -35,6 +35,7 @@ jobs:
         run: |
           npm run build
           npm test
+          npm run test:pi-commands
           npm run typecheck
           npm run privacy:check
       - name: Build release artifact

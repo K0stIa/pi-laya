@@ -30,6 +30,8 @@ jobs:
         run: npm run build
       - name: Test
         run: npm test
+      - name: Test Pi slash commands
+        run: npm run test:pi-commands
       - name: Typecheck
         run: npm run typecheck
       - name: Check privacy boundaries
