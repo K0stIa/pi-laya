@@ -83,6 +83,13 @@ test("disabled automatic hooks leave tools unchanged", async () => {
   assert.equal(await app.handlers.get("tool_call")({ toolName: "bash", input: { command: "pwd" } }, app.ctx), undefined);
 });
 
+test("/laya eval reports provider failure instead of JSON parse failure", async () => {
+  const app = setup({ PI_LAYA_BASE_URL: "https://example.com", PI_LAYA_API_TOKEN: "secret" });
+  const context = { ...app.ctx, model: { provider: "mock", id: "mock" }, modelRegistry: { complete: async () => ({ content: [], stopReason: "error" }) } };
+  await app.run("eval classify a ticket", context);
+  assert.match(app.notifications.at(-1).message, /Active model request failed. Check provider credits and credentials/);
+});
+
 test("/laya test uses fixed smoke test and prompt uses active model design", async () => {
   const original = globalThis.fetch;
   const requests = [];

@@ -139,8 +139,11 @@ switches, and tool counts. `/laya help` lists subcommands.
 | `/laya auto-agents [on\|off]` | Toggle prompt-based agent orchestration for complex tasks. |
 
 Run `/laya status` to inspect this session. Run `/laya test` to check the Laya
-connection. Run `/laya test <prompt>` only when the active Pi model can design
-the questions. Run `/laya enable` to activate registered Laya tools.
+connection. With a prompt, Pi asks its active model for schema-constrained
+question data where supported. Pi validates every question and retries once
+with the validation error. If both designs fail, Pi reports an error and does
+not send an invalid request to Minis. Run `/laya enable` to activate registered
+Laya tools.
 
 Switches without `on` or `off` flip their current state. All automatic modes
 start disabled unless their matching environment variable is set:
@@ -217,9 +220,9 @@ non-executable:
 - Score questions require an ordered, non-empty string `criteria` array. Score
   answers are constrained to its ordinal bounds and preserve a matching
   `legend` and normalized `probabilities` array when the service provides them.
-- Choice answers require normalized probabilities for exactly the submitted
-  options. Noul questions can describe explicit `true` and `false`
-  criteria.
+- Choice answers require probabilities for exactly the submitted options.
+  Choice and score sums allow at most four-decimal rounding error per option.
+  Noul questions can describe explicit `true` and `false` criteria.
 - Transport errors are sanitized and never include response bodies or tokens.
 - `proposeSelection` provides only a pure confidence/margin/budget policy for
   advisory decisions. It has no drivers or action execution.

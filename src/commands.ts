@@ -2,13 +2,14 @@ import type { PiLike } from "./index.js";
 import type { ResolveConfigOptions } from "./config.js";
 import { resolveConfig } from "./config.js";
 import { snapshotInventory } from "./inventory.js";
-import { validateRequest, type LayaResult, type LayaRequest, type LayaQuestion } from "./protocol.js";
+import { designEvaluation } from "./designer.js";
+import type { LayaResult, LayaRequest, LayaQuestion } from "./protocol.js";
 
 const threshold = 0.65;
 const layaTools = ["laya_evaluate", "laya_compact", "laya_review", "laya_inventory_route", "laya_supervise", "laya_decide"];
 const isLaya = (name: string) => name.startsWith("laya_");
 
-type Context = { ui: { notify(message: string, level?: "info" | "warning" | "error"): void; setStatus?(key: string, status: string): void }; signal?: AbortSignal; model?: Record<string, unknown>; modelRegistry?: { getAvailable(): Model[]; hasConfiguredAuth?: (model: Model) => boolean; complete?: (model: Model, input: unknown, options: unknown) => Promise<{ content: { type: string; text?: string }[] }> }; scopedModels?: { model: Model }[]; getSystemPrompt?: () => string };
+type Context = { ui: { notify(message: string, level?: "info" | "warning" | "error"): void; setStatus?(key: string, status: string): void }; signal?: AbortSignal; model?: Model; modelRegistry?: { getAvailable(): Model[]; hasConfiguredAuth?: (model: Model) => boolean; complete?: (model: Model, input: unknown, options: unknown) => Promise<{ content: { type: string; text?: string }[]; stopReason?: string }> }; scopedModels?: { model: Model }[]; getSystemPrompt?: () => string };
 type Model = { provider: string; id: string; reasoning?: boolean; contextWindow?: number; input?: string[]; cost?: { input?: number } };
 type EventBus = { on(name: string, handler: (event: unknown) => void): () => void; emit(name: string, payload: unknown): void };
 type CommandPi = PiLike & { getActiveTools?: () => string[]; getAllTools?: () => { name: string; description?: string }[]; getCommands?: () => { name: string; description?: string; source?: string }[]; setActiveTools?: (names: string[]) => void; setModel?: (model: Model) => Promise<void>; events?: EventBus };
@@ -27,7 +28,7 @@ function shortlist<T extends { name: string; description: string }>(items: T[], 
 }
 function skills(pi: CommandPi, ctx: unknown) {
   const snapshot = snapshotInventory(pi, ctx);
-  return snapshot.skills.map((skill) => ({ name: skill.id, description: skill.description }));
+  return snapshot.skills.map((skill) => ({ name: skill.id.startsWith("skill:") ? skill.id.slice(6) : skill.id, description: skill.description }));
 }
 function probability(answer: LayaResult["answers"][string] | undefined): number {
   return answer?.type === "noul" ? answer.noul : 0;
@@ -45,7 +46,8 @@ export function registerLayaCommands(pi: CommandPi, options: ResolveConfigOption
   const ask = evaluate;
   const listSkills = (ctx: unknown) => skills(pi, ctx);
   const findSkills = async (prompt: string, ctx: Context) => {
-    const candidates = shortlist(listSkills(ctx), prompt, 12);
+    // Bound ONNX CPU work: each candidate is an independent inference question.
+    const candidates = shortlist(listSkills(ctx), prompt, 4);
     if (!candidates.length) return { matches: [] as { name: string; description: string; probability: number }[], fallback: false };
     if (configured(options)) {
       try {
@@ -122,14 +124,7 @@ export function registerLayaCommands(pi: CommandPi, options: ResolveConfigOption
         const smoke: LayaRequest = { state: { message: "Payment processing failed due to credit card expiration." }, questions: { is_billing: { type: "noul", instructions: "Is this message related to billing?" }, category: { type: "choice", instructions: "Which category applies?", criteria: { billing: "Billing or card issues", bug: "Software bug", other: "General questions" } } } };
         try {
           let request = smoke;
-          if (rest) {
-            if (!ctx.model || !ctx.modelRegistry?.complete || (ctx.modelRegistry.hasConfiguredAuth && !ctx.modelRegistry.hasConfiguredAuth(ctx.model as Model))) throw new Error("Active model with configured authentication required to design evaluation.");
-            const response = await ctx.modelRegistry.complete(ctx.model as Model, { systemPrompt: 'Design System-One questions for user prompt. Return ONLY JSON object: {"state":<self-contained JSON>,"questions":{<id>:{"type":"noul"|"choice"|"score","instructions":<string>,"criteria":<type-specific>}}}. Use 1-6 questions; noul needs no criteria, choice needs option-to-description map, score needs string array.', messages: [{ role: "user", content: [{ type: "text", text: rest }], timestamp: Date.now() }] }, { signal: ctx.signal, cacheRetention: "none" });
-            const text = response.content.filter((part) => part.type === "text").map((part) => part.text ?? "").join("\n").trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
-            const parsed: unknown = JSON.parse(text);
-            request = validateRequest(parsed);
-            if (Object.keys(request.questions).length > 6) throw new Error("Model designed too many questions (max 6).");
-          }
+          if (rest) request = await designEvaluation(ctx, rest);
           const result = await ask(request, ctx.signal); ctx.ui.notify(`Laya ${rest ? "Evaluation" : "Test Successful"}:\n${Object.entries(result.answers).map(([name, answer]) => `• ${name}: ${answer.type === "choice" ? `${answer.choice} (P=${answer.probabilities[answer.choice]?.toFixed(2) ?? "?"})` : answer.type === "noul" ? answer.noul : answer.score}`).join("\n")}`); }
         catch (error) { ctx.ui.notify(`Laya Evaluation Failed: ${errorText(error)}`, "error"); } return;
       }
@@ -162,8 +157,10 @@ export function registerLayaCommands(pi: CommandPi, options: ResolveConfigOption
     if (!state.auto || !configured(options) || !pi.getActiveTools || !pi.getAllTools || !pi.setActiveTools) return;
     try {
       const active = pi.getActiveTools();
-      const candidates = shortlist(pi.getAllTools().filter((tool) => !isLaya(tool.name) && !active.includes(tool.name)).map((tool) => ({ name: tool.name, description: tool.description ?? "" })), prompt, 10);
-      const skillCandidates = shortlist(listSkills(ctx), prompt, 10);
+      // One CPU inference per candidate: bound automatic routing to four
+      // short descriptions so Minis can answer before its request deadline.
+      const candidates = shortlist(pi.getAllTools().filter((tool) => !isLaya(tool.name) && !active.includes(tool.name)).map((tool) => ({ name: tool.name, description: (tool.description ?? "").slice(0, 180) })), prompt, 2);
+      const skillCandidates = shortlist(listSkills(ctx), prompt, 2).map((skill) => ({ ...skill, description: skill.description.slice(0, 180) }));
       const combined = [...candidates.map((item) => ({ ...item, kind: "tool" })), ...skillCandidates.map((item) => ({ ...item, kind: "skill" }))];
       if (!combined.length) return;
       const questions = Object.fromEntries(combined.map((item, i) => [`match_${i}`, { type: "noul", instructions: `Does ${item.kind} '${item.name}' (${item.description}) directly help task: ${prompt}?` }])) satisfies Record<string, LayaQuestion>;
@@ -215,6 +212,7 @@ export function registerLayaCommands(pi: CommandPi, options: ResolveConfigOption
       const kept = candidates.filter((item) => probability(result.answers[`keep_${item.index}`]) >= 0.55);
       if (!kept.length) return;
       const response = await ctx.modelRegistry.complete(ctx.model as Model, { systemPrompt: "Summarize complete conversation for continuation. Preserve user goals, decisions, constraints, file paths, errors, and outstanding tasks. Do not invent facts. Return plain text.", messages: [{ role: "user", content: [{ type: "text", text: `Instructions: ${input.customInstructions ?? "Continue task"}\nKeep entries: ${kept.map((item) => item.index).join(", ")}\nBranch: ${full}` }], timestamp: Date.now() }] }, { signal: ctx.signal, cacheRetention: "none" });
+      if (response.stopReason === "error") return;
       const summary = response.content.filter((part) => part.type === "text").map((part) => part.text ?? "").join("\n").trim();
       if (!summary || !input.preparation?.firstKeptEntryId || typeof input.preparation.tokensBefore !== "number") return;
       return { compaction: { summary, firstKeptEntryId: input.preparation.firstKeptEntryId, tokensBefore: input.preparation.tokensBefore } };

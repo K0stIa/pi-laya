@@ -37,9 +37,11 @@ function readFirstArray(sources: readonly unknown[], method: string): unknown[] 
   return [];
 }
 
-function readFirstValue(sources: readonly unknown[], name: string): unknown {
+function readFirstValue(sources: readonly unknown[], name: string): UnknownRecord | unknown[] | undefined {
   for (const source of sources) {
-    if (isRecord(source) && source[name] !== undefined) return source[name];
+    if (!isRecord(source)) continue;
+    const value = source[name];
+    if (Array.isArray(value) || isRecord(value)) return value;
   }
   return undefined;
 }

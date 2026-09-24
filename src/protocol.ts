@@ -129,10 +129,25 @@ function responseNumber(value: unknown, field: string, probability = false): num
   return value;
 }
 
+// Minis rounds each ONNX probability to four decimals. Permit only the
+// maximum aggregate rounding error; still reject materially unnormalized data.
+function normalizedWithinRounding(values: readonly number[]): boolean {
+  return Math.abs(values.reduce((sum, probability) => sum + probability, 0) - 1) <= values.length * 0.00005 + 1e-6;
+}
+
+// Minis serializes score arrays as numeric-keyed objects. Accept only dense,
+// zero-based indices; never fill gaps or guess an order for other objects.
+function responseSequence(value: unknown, length: number, field: string): unknown[] {
+  if (Array.isArray(value) && value.length === length) return value;
+  if (isRecord(value) && Object.keys(value).length === length && Array.from({ length }, (_, index) => String(index)).every((key) => Object.hasOwn(value, key))) {
+    return Array.from({ length }, (_, index) => value[String(index)]);
+  }
+  responseFail(`${field} must contain ${length} indexed entries`);
+}
+
 function responseProbabilities(value: unknown, criteria: readonly string[], field: string): number[] {
-  if (!Array.isArray(value) || value.length !== criteria.length) responseFail(`${field} must contain one probability per criterion`);
-  const probabilities = value.map((item, index) => responseNumber(item, `${field}.${index}`, true));
-  if (Math.abs(probabilities.reduce((sum, probability) => sum + probability, 0) - 1) > 1e-6) responseFail(`${field} must be normalized`);
+  const probabilities = responseSequence(value, criteria.length, field).map((item, index) => responseNumber(item, `${field}.${index}`, true));
+  if (!normalizedWithinRounding(probabilities)) responseFail(`${field} must be normalized`);
   return probabilities;
 }
 
@@ -143,7 +158,7 @@ function responseChoiceProbabilities(value: unknown, criteria: Record<string, st
   if (names.length !== options.length || options.some((option) => !Object.hasOwn(value, option))) responseFail(`${field} must match submitted options`);
   const probabilities = dictionary<number>();
   for (const option of options) probabilities[option] = responseNumber(value[option], `${field}.${option}`, true);
-  if (Math.abs(Object.values(probabilities).reduce((sum, probability) => sum + probability, 0) - 1) > 1e-6) responseFail(`${field} must be normalized`);
+  if (!normalizedWithinRounding(Object.values(probabilities))) responseFail(`${field} must be normalized`);
   return probabilities;
 }
 
@@ -167,8 +182,11 @@ export function validateResult(questions: LayaQuestions, value: unknown): LayaRe
       if (score < 0 || score > expected.criteria.length - 1) responseFail(`answer ${name}.score must be within submitted criteria bounds`);
       const result: ScoreAnswer = { type: "score", score };
       if (answer.legend !== undefined) {
-        const legend = requireStringArray(answer.legend, `answer ${name}.legend`);
-        if (legend.length !== expected.criteria.length || legend.some((item, index) => item !== expected.criteria[index])) responseFail(`answer ${name}.legend must match submitted criteria`);
+        const legend = responseSequence(answer.legend, expected.criteria.length, `answer ${name}.legend`).map((item, index) => {
+          if (typeof item !== "string" || !item.trim()) responseFail(`answer ${name}.legend.${index} must be a non-empty string`);
+          return item;
+        });
+        if (legend.some((item, index) => item !== expected.criteria[index])) responseFail(`answer ${name}.legend must match submitted criteria`);
         result.legend = legend;
       }
       if (answer.probabilities !== undefined) result.probabilities = responseProbabilities(answer.probabilities, expected.criteria, `answer ${name}.probabilities`);

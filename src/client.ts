@@ -70,7 +70,11 @@ async function readResponseJson(response: Response, signal?: AbortSignal): Promi
     bytes.set(chunk, offset);
     offset += chunk.byteLength;
   }
-  return JSON.parse(new TextDecoder().decode(bytes));
+  try {
+    return JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    throw new Error("response JSON is invalid");
+  }
 }
 
 export class LayaClient {
