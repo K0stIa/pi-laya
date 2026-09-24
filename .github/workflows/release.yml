@@ -52,7 +52,7 @@ jobs:
           mkdir -p artifacts
           npm pack --ignore-scripts --pack-destination artifacts
       - name: Upload verified release artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: pi-laya-package
           path: artifacts/*.tgz
@@ -71,7 +71,7 @@ jobs:
           fetch-depth: 0
           ref: ${{ inputs.tag || github.ref }}
       - name: Download verified release artifact
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v7
         with:
           name: pi-laya-package
           path: artifacts
