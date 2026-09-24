@@ -21,7 +21,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-node@v7
         with:
-          node-version: 22.20.3
+          node-version: 22
           cache: npm
           cache-dependency-path: package.json
       - name: Verify tag matches package version

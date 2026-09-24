@@ -215,7 +215,7 @@ npm run privacy:check
 ## CI and releases
 
 GitHub Actions runs the build, tests, typecheck, privacy check, and package
-contents check for pull requests and pushes to `main`, using Node 22.20.3.
+contents check for pull requests and pushes to `main`, using Node 22.
 
 Pushing an annotated tag matching the package version, such as `v0.1.0`, runs
 the same verification and creates a GitHub Release with the packed `.tgz`
