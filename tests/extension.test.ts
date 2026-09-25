@@ -181,12 +181,41 @@ test("/laya_compact includes tool calls in active-context text instead of losing
     const commands = [];
     extensionModule.default({ registerTool: () => {}, registerCommand: (name, command) => commands.push({ name, command }) }, { env: { PI_LAYA_BASE_URL: "https://laya.example.com", PI_LAYA_API_TOKEN: "test-token" } });
     await commands[0].command.handler("", { sessionManager: { buildContextEntries: () => [
-      { id: "tool-call", type: "message", message: { role: "assistant", content: [{ type: "text", text: "Inspect workspace" }, { type: "toolCall", id: "call-1", name: "bash", arguments: { command: "pwd" } }] } },
+      { id: "tool-call", type: "message", message: { role: "assistant", content: [{ type: "text", text: "Inspect workspace" }, { type: "toolCall", id: "call-1", name: "bash", arguments: { command: "pwd" }, thoughtSignature: "PRIVATE-TOOL-SIGNATURE" }] } },
       { id: "goal", type: "message", message: { role: "user", content: [{ type: "text", text: "Keep goal" }] } },
       { id: "latest", type: "message", message: { role: "assistant", content: [{ type: "text", text: "Latest" }] } },
     ] }, ui: { notify: () => {} } });
     assert.match(request.state.items[0].text, /"name":"bash"/);
     assert.match(request.state.items[0].text, /"command":"pwd"/);
+    assert.doesNotMatch(JSON.stringify(request), /PRIVATE-TOOL-SIGNATURE/);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test("/laya_compact plans visible replies without sending private thinking to Minis", async () => {
+  const originalFetch = globalThis.fetch;
+  let request;
+  globalThis.fetch = async (_url, init) => {
+    request = JSON.parse(String(init?.body));
+    return new Response(JSON.stringify({ answers: Object.fromEntries(Object.keys(request.questions).map((id) => [id, { type: "choice", choice: "DROP", probabilities: { KEEP: 0.01, DROP: 0.98, TRUNCATE: 0.01 } }])) }));
+  };
+  try {
+    const commands = [];
+    const records = [];
+    const notices = [];
+    extensionModule.default({ registerTool: () => {}, registerCommand: (name, command) => commands.push({ name, command }) }, { env: { PI_LAYA_BASE_URL: "https://laya.example.com", PI_LAYA_API_TOKEN: "test-token" } });
+    await commands[0].command.handler("", { sessionManager: { buildContextEntries: () => [
+      { id: "old", type: "message", message: { role: "assistant", content: [{ type: "thinking", thinking: "PRIVATE-OLD-REASONING", thinkingSignature: "PRIVATE-OLD-SIGNATURE" }, { type: "text", text: "Public old reply" }] } },
+      { id: "goal", type: "message", message: { role: "user", content: [{ type: "text", text: "Keep goal" }] } },
+      { id: "latest", type: "message", message: { role: "assistant", content: [{ type: "thinking", thinking: "PRIVATE-NEW-REASONING" }, { type: "text", text: "Public latest reply" }] } },
+    ], appendCustomEntry: (_type, data) => records.push(data) }, ui: { notify: (...args) => notices.push(args) } });
+    assert.equal(Object.keys(request.questions).length, 1);
+    assert.ok(request.state.items.some((item) => item.id === "old" && item.protected && !item.text.includes("PRIVATE")));
+    assert.ok(request.state.items.some((item) => item.id === "old:visible" && !item.protected && item.text === "Public old reply"));
+    assert.ok(request.state.items.some((item) => item.id === "latest:visible" && item.protected));
+    assert.doesNotMatch(JSON.stringify(request), /PRIVATE-(OLD|NEW)-(REASONING|SIGNATURE)/);
+    assert.doesNotMatch(JSON.stringify(records), /PRIVATE-(OLD|NEW)-(REASONING|SIGNATURE)/);
+    assert.equal(records[0].labels["old:visible"], "assistant 1 visible text only");
+    assert.ok(notices[0][0].includes("ABSTAINED") || notices[0][0].includes("PROPOSED"));
   } finally { globalThis.fetch = originalFetch; }
 });
 

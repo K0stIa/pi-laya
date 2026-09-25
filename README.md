@@ -89,10 +89,11 @@ bounded snapshot from Pi's active, compaction-aware context. User messages,
 existing compaction summaries, custom messages, and the two newest entries are
 protected. When it has more than four removable entries, it groups all of them
 into four labelled batches without dropping captured text or tool calls. Minis
-evaluates those batches; protected entries stay separate. Image or other
-unsupported non-text content, oversized requests, or low-confidence choices
-fail safely or abstain. Use native `/compact` when advisory planning cannot
-cover the active context.
+evaluates visible context. Private assistant thinking stays protected in Pi;
+its text and signatures never enter the request. Protected entries stay
+separate. Images or other unsupported content, oversized requests, and
+low-confidence choices fail safely or abstain. Use native `/compact` when
+advisory planning cannot cover the active context.
 
 `/laya_compact <snapshot.json>` remains available for an explicitly grouped or
 curated snapshot. The file must contain `items` and `policy` matching the

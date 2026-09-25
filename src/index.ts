@@ -454,6 +454,9 @@ function activeContextCompactionInput(context: SlashCommandContext): { items: Sn
   const protectedStart = Math.max(0, items.length - 2);
   for (let index = protectedStart; index < items.length; index += 1) items[index]!.protected = true;
   const labels = labelsForActiveContext(entries);
+  for (const item of items) {
+    if (item.id.endsWith(":visible")) labels[item.id] = `${labels[item.id.slice(0, -8)] ?? "assistant"} visible text only`;
+  }
   const grouped = groupRemovableItems(items, labels);
   const totalTokens = items.reduce((total, item) => total + item.tokenEstimate, 0);
   return {
@@ -512,29 +515,41 @@ function contextEntryToItem(entry: unknown, index: number): SnapshotItem[] {
     return text ? [{ id, text, tokenEstimate: estimateTokens(text), protected: true }] : [];
   }
   if (type === "custom_message") {
-    const text = textFromContent(value.content);
-    return text ? [{ id, text, tokenEstimate: estimateTokens(text), protected: true }] : [];
+    const content = visibleContent(value.content);
+    const text = content.text || (content.hasThinking ? "Private thinking retained in Pi session." : "");
+    return text ? [{ id, text, tokenEstimate: estimateTokens(text) + content.thinkingTokens, protected: true }] : [];
   }
   if (type !== "message" || !value.message || typeof value.message !== "object" || Array.isArray(value.message)) return [];
   const message = value.message as Record<string, unknown>;
-  const text = textFromContent(message.content);
-  if (!text) return [];
-  return [{ id, text, tokenEstimate: estimateTokens(text), protected: message.role === "user" || message.role === "system" }];
+  const content = visibleContent(message.content);
+  if (!content.hasThinking) return content.text ? [{ id, text: content.text, tokenEstimate: estimateTokens(content.text), protected: message.role === "user" || message.role === "system" }] : [];
+  // Private reasoning never enters the Laya request. Retain its original entry;
+  // only the visible portion can receive an advisory decision.
+  const privateItem: SnapshotItem = { id, text: "Private thinking retained in Pi session.", tokenEstimate: content.thinkingTokens, protected: true };
+  if (message.role !== "assistant" || !content.text) return content.text
+    ? [{ ...privateItem, text: content.text, tokenEstimate: estimateTokens(content.text) + content.thinkingTokens }]
+    : [privateItem];
+  return [privateItem, { id: `${id}:visible`, text: content.text, tokenEstimate: estimateTokens(content.text) }];
 }
 
-function textFromContent(content: unknown): string {
-  if (typeof content === "string") return content.trim();
-  if (content === undefined || content === null) return "";
+function visibleContent(content: unknown): { text: string; thinkingTokens: number; hasThinking: boolean } {
+  if (typeof content === "string") return { text: content.trim(), thinkingTokens: 0, hasThinking: false };
+  if (content === undefined || content === null) return { text: "", thinkingTokens: 0, hasThinking: false };
   if (!Array.isArray(content)) throw new Error("Active Pi session contains non-text content; use /compact instead");
   const texts: string[] = [];
+  let thinkingTokens = 0;
+  let hasThinking = false;
   for (const part of content) {
     if (!part || typeof part !== "object" || Array.isArray(part)) throw new Error("Active Pi session contains non-text content; use /compact instead");
     const value = part as Record<string, unknown>;
     if (value.type === "text" && typeof value.text === "string") texts.push(value.text);
-    else if (value.type === "toolCall") texts.push(JSON.stringify(value));
-    else throw new Error("Active Pi session contains non-text content; use /compact instead");
+    else if (value.type === "toolCall") texts.push(JSON.stringify({ type: "toolCall", id: value.id, name: value.name, arguments: value.arguments, namespace: value.namespace }));
+    else if (value.type === "thinking" && typeof value.thinking === "string") {
+      hasThinking = true;
+      thinkingTokens += estimateTokens(value.thinking);
+    } else throw new Error("Active Pi session contains non-text content; use /compact instead");
   }
-  return texts.join("\n").trim();
+  return { text: texts.join("\n").trim(), thinkingTokens, hasThinking };
 }
 
 function estimateTokens(text: string): number {
